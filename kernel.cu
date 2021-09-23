@@ -1,6 +1,7 @@
 // Standard C++ includes
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <numeric>
 #include <random>
@@ -380,6 +381,9 @@ int main(int argc, char *argv[])
             }
         }
         deviceToHostCopy(outCurrents, numPost);
+
+        std::ofstream outCurrentsFile("outCurrents.bin", std::ios_base::binary);
+        outCurrentsFile.write(reinterpret_cast<const char*>(outCurrents.first), sizeof(float) * numPost);
     }
     catch(std::exception &ex)
     {
