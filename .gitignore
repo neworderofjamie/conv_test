@@ -1,5 +1,8 @@
 /kernel
 /kernel.o
 /x64/
-/standalone.vcxproj.user
 /vc120.pdb
+/Debug/
+/Release/
+/.vs/
+*.vcxproj.user
