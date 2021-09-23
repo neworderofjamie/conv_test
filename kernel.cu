@@ -15,10 +15,7 @@
 #include <cmath>
 
 // CUDA includes
-#include <cooperative_groups.h>
 #include <cuda_runtime.h>
-#include <curand_kernel.h>
-#include <device_launch_parameters.h>
 
 //------------------------------------------------------------------------
 // Macros
