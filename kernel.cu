@@ -38,6 +38,7 @@ using HostDeviceArray = std::pair < T*, T* > ;
 enum Mode
 {
     ModeProcedural,
+    ModeToeplitz,
     ModeMax,
 };
 
@@ -213,7 +214,8 @@ const unsigned int s_Spikes[] = {
     4078, 4079, 4080, 4081, 4082, 4083, 4084, 4085, 4086, 4087, 4088};
 
 const char *const s_ModeNames[] = {
-    "Procedural"};
+    "Procedural"
+    "Toeplitz"};
 
 //-----------------------------------------------------------------------------
 // Kernels
@@ -248,6 +250,64 @@ __global__ void procedural(unsigned int numInSpikes, const unsigned int *d_inSpi
                 }
             }
         }
+    }
+}
+
+template<int ConvK, int ConvI, int ConvO>
+__global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpikes,
+                         const float *d_kernel, float *d_outCurrents)
+{
+    extern __shared__ unsigned int s_buffer[];
+    unsigned int *s_spike = &s_buffer[0];
+
+    const unsigned int id = threadIdx.x + (blockIdx.x * blockDim.x);
+
+    // Calculate number of blocks (dictated by shared memory) spikes need to be processed in
+    const unsigned int numSpikeBlocks = (numInSpikes + blockDim.x - 1) / blockDim.x;
+
+    const unsigned int blk = id / ConvK;
+    const unsigned int thread = id % ConvK;
+
+    // Loop through spikes blocks
+    for (unsigned int b = 0; b < numSpikeBlocks; b++) {
+        // Determine how many spikes are in this block
+        const unsigned int numSpikesInBlock = (b == (numSpikeBlocks - 1))
+            ? ((numInSpikes - 1) % blockDim.x) + 1 : blockDim.x;
+     
+        __syncthreads();
+            
+        // Use first threads in block to read spikes and row lengths into shared memory
+        if (threadIdx.x < numSpikesInBlock) {
+            const unsigned int i = d_inSpikes[(b * blockDim.x) + threadIdx.x];
+            s_spike[threadIdx.x] = i;
+        }
+
+        __syncthreads();
+
+        // If there is a synapse for this thread to process
+        if(blk < ConvK) {
+            // Get appropriate kernel row
+            const float *d_kernelRow = &d_kernel[blk * ConvK];
+
+            // Loop through spikes in block
+            for(unsigned int s = 0; s < numSpikesInBlock; s++)
+            {
+                // Determine which column of blocks contains pre
+                // **NOTE** from the POV of connectivity matrices, the columns of the Toeplitz matrix are the rows
+                const unsigned int j = s_spike[s] / ConvI;
+                const unsigned int col = s_spike[s] % ConvI;
+
+                // If we haven't gone off edge of output
+                const unsigned int i = j + blk;
+                if(i < ConvO && thread < (ConvO - col)) {
+                    const unsigned int startOut = (i * ConvO) + col;
+                
+                    // Update output (coalesced reading of filter row and no collisions on atomic add)
+                    atomicAdd(&d_outCurrents[startOut + thread], d_kernelRow[thread]);
+                }
+            }
+        }
+        
     }
 }
 
@@ -362,7 +422,7 @@ int main(int argc, char *argv[])
 
         {
             // Loop through time
-            for (unsigned int t = 0; t < numTimesteps; t++) {
+            for(unsigned int t = 0; t < numTimesteps; t++) {
                 if(mode == ModeProcedural) {
                     // Calculate number of presynaptically parallelised blocks are required to handle poisson spikes
                     constexpr unsigned int numPreSynapseBlocks = ceilDivide(numPre, blockSize);
@@ -370,10 +430,25 @@ int main(int argc, char *argv[])
                     dim3 threads(blockSize, 1);
                     dim3 grid(numPreSynapseBlocks, 1);
 
-                    procedural<convKH, convKW, convIW, convIC, convOH, convOW, convOC><<<grid, threads>>>(
+                    procedural<convKH, convKW, convIW, convIC, convOH, convOW, convOC><<<grid, threads>>> (
                         numSpikesPerTimestep, &d_spikes[t * numSpikesPerTimestep],
                         d_kernel, outCurrents.second);
+                }
+                else if(mode == ModeToeplitz) {
+                    assert(convKH == convKW);
+                    assert(convIW == convIH);
+                    assert(convOW == convOH);
+                    assert(convIC == 1);
+                    assert(convOC == 1);
 
+                    constexpr unsigned int numPostSynapseBlocks = ceilDivide(convKW * convKH, blockSize);
+                    constexpr unsigned int sharedBytes = blockSize * sizeof(unsigned int);
+                    
+                    dim3 threads(blockSize, 1);
+                    dim3 grid(numPostSynapseBlocks, 1);
+                    toeplitz<convKH, convIH, convOH><<<grid, threads, sharedBytes>>>(
+                        numSpikesPerTimestep, &d_spikes[t * numSpikesPerTimestep],
+                        d_kernel, outCurrents.second);
                 }
             }
         }
