@@ -214,7 +214,7 @@ const unsigned int s_Spikes[] = {
     4078, 4079, 4080, 4081, 4082, 4083, 4084, 4085, 4086, 4087, 4088};
 
 const char *const s_ModeNames[] = {
-    "Procedural"
+    "Procedural",
     "Toeplitz"};
 
 //-----------------------------------------------------------------------------
@@ -245,7 +245,7 @@ __global__ void procedural(unsigned int numInSpikes, const unsigned int *d_inSpi
                     const int idPost = ((outRow * ConvOW * ConvOC) +
                                         (outCol * ConvOC) +
                                         outChan);
-                    const unsigned int kernelInd = (kernRow * ConvKW * ConvIC * 1) + (kernCol * ConvIC * ConvOC) + (inChan * ConvOC) + outChan;
+                    const unsigned int kernelInd = (kernRow * ConvKW * ConvIC * ConvOC) + (kernCol * ConvIC * ConvOC) + (inChan * ConvOC) + outChan;
                     atomicAdd(&d_outCurrents[idPost], d_kernel[kernelInd]);
                 }
             }
@@ -260,13 +260,13 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
     extern __shared__ unsigned int s_buffer[];
     unsigned int *s_spike = &s_buffer[0];
 
-    const unsigned int id = threadIdx.x + (blockIdx.x * blockDim.x);
+    const int id = threadIdx.x + (blockIdx.x * blockDim.x);
 
     // Calculate number of blocks (dictated by shared memory) spikes need to be processed in
     const unsigned int numSpikeBlocks = (numInSpikes + blockDim.x - 1) / blockDim.x;
 
-    const unsigned int blk = id / ConvK;
-    const unsigned int thread = id % ConvK;
+    const int blk = id / ConvK;
+    const int thread = id % ConvK;
 
     // Loop through spikes blocks
     for (unsigned int b = 0; b < numSpikeBlocks; b++) {
@@ -278,8 +278,7 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
             
         // Use first threads in block to read spikes and row lengths into shared memory
         if (threadIdx.x < numSpikesInBlock) {
-            const unsigned int i = d_inSpikes[(b * blockDim.x) + threadIdx.x];
-            s_spike[threadIdx.x] = i;
+            s_spike[threadIdx.x] = d_inSpikes[(b * blockDim.x) + threadIdx.x];
         }
 
         __syncthreads();
@@ -290,17 +289,16 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
             const float *d_kernelRow = &d_kernel[blk * ConvK];
 
             // Loop through spikes in block
-            for(unsigned int s = 0; s < numSpikesInBlock; s++)
-            {
+            for(unsigned int s = 0; s < numSpikesInBlock; s++) {
                 // Determine which column of blocks contains pre
                 // **NOTE** from the POV of connectivity matrices, the columns of the Toeplitz matrix are the rows
-                const unsigned int j = s_spike[s] / ConvI;
-                const unsigned int col = s_spike[s] % ConvI;
+                const int j = s_spike[s] / ConvI;
+                const int col = s_spike[s] % ConvI;
 
                 // If we haven't gone off edge of output
-                const unsigned int i = j + blk;
+                const int i = j + blk;
                 if(i < ConvO && thread < (ConvO - col)) {
-                    const unsigned int startOut = (i * ConvO) + col;
+                    const int startOut = (i * ConvO) + col;
                 
                     // Update output (coalesced reading of filter row and no collisions on atomic add)
                     atomicAdd(&d_outCurrents[startOut + thread], d_kernelRow[thread]);
@@ -371,10 +369,13 @@ int main(int argc, char *argv[])
 
         // Count spikes
         constexpr unsigned int numSpikes = sizeof(s_Spikes) / sizeof(unsigned int);
-
-        // Calculate required
+        
+        // Calculate required timesteps
         constexpr unsigned int numTimesteps =  ceilDivide(numSpikes, numSpikesPerTimestep);
 
+        // Calculate remaining spikes to process in last timestep
+        constexpr unsigned int lastTimestepSpikes = numSpikes - ((numTimesteps - 1) * numSpikesPerTimestep);
+        
         // Check filter is correct size
         assert((sizeof(s_Kernel) / sizeof(float)) == kernelSize);
 
@@ -396,7 +397,6 @@ int main(int argc, char *argv[])
             mode = (Mode)std::stoul(argv[1]);
         }
 
-        const int preBlocks = (unsigned int)std::ceil((float)numPre / (float)blockSize);
         std::cout << "Mode:" << s_ModeNames[mode] << std::endl;
     
         CHECK_CUDA_ERRORS(cudaSetDevice(0));
@@ -423,6 +423,8 @@ int main(int argc, char *argv[])
         {
             // Loop through time
             for(unsigned int t = 0; t < numTimesteps; t++) {
+                const unsigned int numTimestepSpikes = (t == (numTimesteps - 1)) ? lastTimestepSpikes : numSpikesPerTimestep;
+
                 if(mode == ModeProcedural) {
                     // Calculate number of presynaptically parallelised blocks are required to handle poisson spikes
                     constexpr unsigned int numPreSynapseBlocks = ceilDivide(numPre, blockSize);
@@ -431,7 +433,7 @@ int main(int argc, char *argv[])
                     dim3 grid(numPreSynapseBlocks, 1);
 
                     procedural<convKH, convKW, convIW, convIC, convOH, convOW, convOC><<<grid, threads>>> (
-                        numSpikesPerTimestep, &d_spikes[t * numSpikesPerTimestep],
+                        numTimestepSpikes, &d_spikes[t * numSpikesPerTimestep],
                         d_kernel, outCurrents.second);
                 }
                 else if(mode == ModeToeplitz) {
@@ -447,14 +449,15 @@ int main(int argc, char *argv[])
                     dim3 threads(blockSize, 1);
                     dim3 grid(numPostSynapseBlocks, 1);
                     toeplitz<convKH, convIH, convOH><<<grid, threads, sharedBytes>>>(
-                        numSpikesPerTimestep, &d_spikes[t * numSpikesPerTimestep],
+                        numTimestepSpikes, &d_spikes[t * numSpikesPerTimestep],
                         d_kernel, outCurrents.second);
                 }
+                CHECK_CUDA_ERRORS(cudaPeekAtLastError());
             }
         }
         deviceToHostCopy(outCurrents, numPost);
 
-        std::ofstream outCurrentsFile("outCurrents.bin", std::ios_base::binary);
+        std::ofstream outCurrentsFile("outCurrents" + std::string(s_ModeNames[mode]) + ".bin", std::ios_base::binary);
         outCurrentsFile.write(reinterpret_cast<const char*>(outCurrents.first), sizeof(float) * numPost);
     }
     catch(std::exception &ex)
