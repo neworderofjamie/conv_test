@@ -253,7 +253,7 @@ __global__ void procedural(unsigned int numInSpikes, const unsigned int *d_inSpi
     }
 }
 
-template<int ConvK, int ConvI, int ConvO>
+template<int ConvK, int ConvI, int ConvIC, int ConvO, int ConvOC>
 __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpikes,
                          const float *d_kernel, float *d_outCurrents)
 {
@@ -262,11 +262,19 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
 
     const int id = threadIdx.x + (blockIdx.x * blockDim.x);
 
+    // Split id into kernel row, column and output channel
+    const int kernRow = (id / ConvOC) / ConvK;
+    const int kernCol = (id / ConvOC) % ConvK;
+    const int kernOutChan = id % ConvOC;
+    
+    // From these, calculate partial (without input channel) kernel index
+    const int kernelInd = (kernRow * ConvK * ConvIC * ConvOC) + (kernCol * ConvIC * ConvOC) + kernOutChan;
+    
+    const int postInd = ((outRow * ConvO * ConvOC) +
+                                        (outCol * ConvOC) +
+                                        kernOutChan)
     // Calculate number of blocks (dictated by shared memory) spikes need to be processed in
     const unsigned int numSpikeBlocks = (numInSpikes + blockDim.x - 1) / blockDim.x;
-
-    const int blk = id / ConvK;
-    const int thread = id % ConvK;
 
     // Loop through spikes blocks
     for (unsigned int b = 0; b < numSpikeBlocks; b++) {
@@ -283,25 +291,27 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
 
         __syncthreads();
 
-        // If there is a synapse for this thread to process
-        if(blk < ConvK) {
-            // Get appropriate kernel row
-            const float *d_kernelRow = &d_kernel[blk * ConvK];
-
+        // If there is a kernel entry for this thread to process
+        if(id < (ConvO * ConvO * ConvOC)) {
             // Loop through spikes in block
             for(unsigned int s = 0; s < numSpikesInBlock; s++) {
-                // Determine which column of blocks contains pre
-                // **NOTE** from the POV of connectivity matrices, the columns of the Toeplitz matrix are the rows
-                const int j = s_spike[s] / ConvI;
-                const int col = s_spike[s] % ConvI;
+                // Split pre into row, column and channel
+                // **NOTE** this COULD be done once and written to shared memory
+                const int preRow = (s_spike[s] / ConvIC) / ConvI;
+                const int preCol = (s_spike[s] / ConvIC) % ConvI;
+                const int preChan = s_Spikes[s] % ConvIC;
 
                 // If we haven't gone off edge of output
-                const int i = j + blk;
-                if(i < ConvO && thread < (ConvO - col)) {
-                    const int startOut = (i * ConvO) + col;
-                
+                const int i = preRow + kernRow;
+                if(i < ConvO && kernCol < (ConvO - preCol)) {
+                    const int startOut = (i * ConvO) + preCol;
+                    
+                    // Read kernel value
+                    // **NOTE** if we were only processing a single input channel this could be lifted right out
+                    const float kernelVal = d_kernel[kernelInd + (preChan * ConvOC)];
+                    
                     // Update output (coalesced reading of filter row and no collisions on atomic add)
-                    atomicAdd(&d_outCurrents[startOut + thread], d_kernelRow[thread]);
+                    atomicAdd(&d_outCurrents[startOut + kernCol], kernelVal);
                 }
             }
         }
