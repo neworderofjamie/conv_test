@@ -262,6 +262,7 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
 
     const int id = threadIdx.x + (blockIdx.x * blockDim.x);
 
+    // **BEGIN COLUMN STATE VARIABLES**
     // Split id into kernel row, column and output channel
     const int kernRow = (id / ConvOC) / ConvK;
     const int kernCol = (id / ConvOC) % ConvK;
@@ -270,9 +271,11 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
     // From these, calculate partial (without input channel) kernel index
     const int kernelInd = (kernRow * ConvK * ConvIC * ConvOC) + (kernCol * ConvIC * ConvOC) + kernOutChan;
     
-    const int postInd = ((outRow * ConvO * ConvOC) +
-                                        (outCol * ConvOC) +
-                                        kernOutChan)
+    //const int postInd = ((outRow * ConvO * ConvOC) +
+    //                     (outCol * ConvOC) +
+    //                     kernOutChan)
+    // **END COLUMN STATE VARIABLES**
+
     // Calculate number of blocks (dictated by shared memory) spikes need to be processed in
     const unsigned int numSpikeBlocks = (numInSpikes + blockDim.x - 1) / blockDim.x;
 
@@ -292,14 +295,16 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
         __syncthreads();
 
         // If there is a kernel entry for this thread to process
+        // **NOTE** maxRowLength = ConvO * ConvO * ConvOC
         if(id < (ConvO * ConvO * ConvOC)) {
             // Loop through spikes in block
             for(unsigned int s = 0; s < numSpikesInBlock; s++) {
+                // **BEGIN DIAGONAL GENERATE CODE**
                 // Split pre into row, column and channel
                 // **NOTE** this COULD be done once and written to shared memory
                 const int preRow = (s_spike[s] / ConvIC) / ConvI;
                 const int preCol = (s_spike[s] / ConvIC) % ConvI;
-                const int preChan = s_Spikes[s] % ConvIC;
+                const int preChan = s_spike[s] % ConvIC;
 
                 // If we haven't gone off edge of output
                 const int i = preRow + kernRow;
@@ -308,11 +313,13 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
                     
                     // Read kernel value
                     // **NOTE** if we were only processing a single input channel this could be lifted right out
-                    const float kernelVal = d_kernel[kernelInd + (preChan * ConvOC)];
+                    const float kernelVal = -d_kernel[kernelInd + (preChan * ConvOC)];
                     
                     // Update output (coalesced reading of filter row and no collisions on atomic add)
                     atomicAdd(&d_outCurrents[startOut + kernCol], kernelVal);
                 }
+
+                // **END DIAGONAL GENERATE CODE**
             }
         }
         
@@ -412,6 +419,16 @@ int main(int argc, char *argv[])
         CHECK_CUDA_ERRORS(cudaSetDevice(0));
 
         //------------------------------------------------------------------------
+        // Create timing events
+        //------------------------------------------------------------------------
+        cudaEvent_t kernelStartEvent;
+        cudaEvent_t kernelEndEvent;
+        double kernelTime = 0.0;
+
+        CHECK_CUDA_ERRORS(cudaEventCreate(&kernelStartEvent));
+        CHECK_CUDA_ERRORS(cudaEventCreate(&kernelEndEvent));
+
+        //------------------------------------------------------------------------
         // Configure fixed-probability connector
         //------------------------------------------------------------------------
         // Create arrays to hold post-synaptic currents
@@ -434,6 +451,8 @@ int main(int argc, char *argv[])
             // Loop through time
             for(unsigned int t = 0; t < numTimesteps; t++) {
                 const unsigned int numTimestepSpikes = (t == (numTimesteps - 1)) ? lastTimestepSpikes : numSpikesPerTimestep;
+
+                CHECK_CUDA_ERRORS(cudaEventRecord(kernelStartEvent));
 
                 if(mode == ModeProcedural) {
                     // Calculate number of presynaptically parallelised blocks are required to handle poisson spikes
@@ -458,15 +477,21 @@ int main(int argc, char *argv[])
                     
                     dim3 threads(blockSize, 1);
                     dim3 grid(numPostSynapseBlocks, 1);
-                    toeplitz<convKH, convIH, convOH><<<grid, threads, sharedBytes>>>(
+                    toeplitz<convKH, convIH, convIC, convOH, convOC><<<grid, threads, sharedBytes>>>(
                         numTimestepSpikes, &d_spikes[t * numSpikesPerTimestep],
                         d_kernel, outCurrents.second);
                 }
-                CHECK_CUDA_ERRORS(cudaPeekAtLastError());
+                CHECK_CUDA_ERRORS(cudaEventRecord(kernelEndEvent));
+                CHECK_CUDA_ERRORS(cudaEventSynchronize(kernelEndEvent));
+
+                float tmp;
+                CHECK_CUDA_ERRORS(cudaEventElapsedTime(&tmp, kernelStartEvent, kernelEndEvent));
+                kernelTime += tmp;
             }
         }
         deviceToHostCopy(outCurrents, numPost);
 
+        std::cout << "Kernel time:" << kernelTime << " ms" << std::endl;
         std::ofstream outCurrentsFile("outCurrents" + std::string(s_ModeNames[mode]) + ".bin", std::ios_base::binary);
         outCurrentsFile.write(reinterpret_cast<const char*>(outCurrents.first), sizeof(float) * numPost);
     }
