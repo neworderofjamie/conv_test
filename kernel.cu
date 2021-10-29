@@ -224,13 +224,15 @@ void deviceToHostCopy(HostDeviceArray<T> &array, unsigned int count)
     CHECK_CUDA_ERRORS(cudaMemcpy(array.first, array.second, count * sizeof(T), cudaMemcpyDeviceToHost));
 }
 //-----------------------------------------------------------------------------
-std::vector<unsigned int> generateSpikes(int numChannels)
+std::vector<unsigned int> generateSpikes(int numChannels, int width, int height)
 {
     auto img = cv::imread("test.png", cv::IMREAD_COLOR);
     if (img.empty()) {
         throw std::runtime_error("Could not load input image");
     }
     
+    // Resize image
+    cv::resize(img, img, cv::Size(width, height), 0, 0, cv::INTER_NEAREST);
     
     // Split image into channels
     cv::Mat channels[3];
@@ -291,11 +293,11 @@ int main(int argc, char *argv[])
         constexpr int blockSize = 128;
         constexpr int convKH = 3;
         constexpr int convKW = 3;
-        constexpr int convIH = 64;
-        constexpr int convIW = 64;
+        constexpr int convIH = 128;
+        constexpr int convIW = 128;
         constexpr int convIC = 3;
-        constexpr int convOH = 62;
-        constexpr int convOW = 62;
+        constexpr int convOH = 126;
+        constexpr int convOW = 126;
         constexpr int convOC = 1;
         constexpr unsigned int numSpikesPerTimestep = 100;
 
@@ -325,7 +327,7 @@ int main(int argc, char *argv[])
         }
 
         // Generate spikes and kernels
-        const auto spikes = generateSpikes(convIC);        
+        const auto spikes = generateSpikes(convIC, convIW, convIH);        
         //const auto kernels = generateKernels<convKW, convKH>(convIC, convOC);
         
         // Calculate required timesteps

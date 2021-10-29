@@ -4,8 +4,11 @@ import matplotlib.pyplot as plt
 out_currents_procedural = np.fromfile("outCurrentsProcedural.bin", dtype=np.float32)
 out_currents_toeplitz = np.fromfile("outCurrentsToeplitz.bin", dtype=np.float32)
 
-out_currents_procedural = out_currents_procedural.reshape((62, 62))
-out_currents_toeplitz = out_currents_toeplitz.reshape((62, 62))
+
+size = np.ceil(np.sqrt(out_currents_procedural.shape[0])).astype(int)
+
+out_currents_procedural = out_currents_procedural.reshape((size, size))
+out_currents_toeplitz = out_currents_toeplitz.reshape((size, size))
 
 fig, axes = plt.subplots(2)
 axes[0].set_title("Procedural")
