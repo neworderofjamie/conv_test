@@ -270,10 +270,7 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
     
     // From these, calculate partial (without input channel) kernel index
     const int kernelInd = (kernRow * ConvK * ConvIC * ConvOC) + (kernCol * ConvIC * ConvOC) + kernOutChan;
-    
-    //const int postInd = ((outRow * ConvO * ConvOC) +
-    //                     (outCol * ConvOC) +
-    //                     kernOutChan)
+
     // **END COLUMN STATE VARIABLES**
 
     // Calculate number of blocks (dictated by shared memory) spikes need to be processed in
@@ -299,24 +296,31 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
         if(id < (ConvO * ConvO * ConvOC)) {
             // Loop through spikes in block
             for(unsigned int s = 0; s < numSpikesInBlock; s++) {
-                // **BEGIN DIAGONAL GENERATE CODE**
+                // **BEGIN ROW STATE VARIABLES**
                 // Split pre into row, column and channel
                 // **NOTE** this COULD be done once and written to shared memory
                 const int preRow = (s_spike[s] / ConvIC) / ConvI;
                 const int preCol = (s_spike[s] / ConvIC) % ConvI;
                 const int preChan = s_spike[s] % ConvIC;
-
+                
+                // **END ROW STATE VARIABLES**
+                
+                // **BEGIN DIAGONAL GENERATE CODE**
                 // If we haven't gone off edge of output
-                const int i = preRow + kernRow;
-                if(i < ConvO && kernCol < (ConvO - preCol)) {
-                    const int startOut = (i * ConvO) + preCol;
-                    
+                const int postRow = preRow + kernRow;
+                const int postCol = preCol + kernCol;
+                if(postRow < ConvO && kernCol < (ConvO - preCol)) {                    
                     // Read kernel value
                     // **NOTE** if we were only processing a single input channel this could be lifted right out
                     const float kernelVal = -d_kernel[kernelInd + (preChan * ConvOC)];
+        
+                    // Calculate postsynaptic index
+                    const int postInd = ((postRow * ConvO * ConvOC) +
+                                         (postCol * ConvOC) +
+                                         kernOutChan);
                     
                     // Update output (coalesced reading of filter row and no collisions on atomic add)
-                    atomicAdd(&d_outCurrents[startOut + kernCol], kernelVal);
+                    atomicAdd(&d_outCurrents[postInd], kernelVal);
                 }
 
                 // **END DIAGONAL GENERATE CODE**
@@ -414,7 +418,7 @@ int main(int argc, char *argv[])
             mode = (Mode)std::stoul(argv[1]);
         }
 
-        std::cout << "Mode:" << s_ModeNames[mode] << std::endl;
+        std::cout << "Mode:" << s_ModeNames[mode] << ", Num timesteps:" << numTimesteps << std::endl;
     
         CHECK_CUDA_ERRORS(cudaSetDevice(0));
 
