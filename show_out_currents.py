@@ -25,10 +25,10 @@ fig, axes = plt.subplots(num_channels, 2, sharex="col", sharey="row")
 for c in range(num_channels):
     axes_row = axes[c, :] if num_channels > 1 else axes
     axes_row[0].set_title("Procedural")
-    axes_row[0].imshow(out_currents_procedural[:,:,c])
+    axes_row[0].imshow(out_currents_procedural[:,:,c], vmin=-10.0, vmax=10.0)
 
     axes_row[1].set_title("Toeplitz")
-    axes_row[1].imshow(out_currents_toeplitz[:,:,c])
+    axes_row[1].imshow(out_currents_toeplitz[:,:,c], vmin=-10.0, vmax=10.0)
 
 fig.tight_layout(pad=0)
 plt.show()
