@@ -45,18 +45,18 @@ enum Mode
     ModeMax,
 };
 
-// Convolution kernel
-/*const float s_Kernel[9][4] = {
-    { 1.    ,  1.    , -1.    ,  0.1111},
-    { 0.    ,  2.    , -1.    ,  0.1111},
-    {-1.    ,  1.    , -1.    ,  0.1111},
-    { 2.    ,  0.    , -1.    ,  0.1111},
-    { 0.    ,  0.    ,  8.    ,  0.1111},
-    {-2.    ,  0.    , -1.    ,  0.1111},
-    { 1.    , -1.    , -1.    ,  0.1111},
-    { 0.    , -2.    , -1.    ,  0.1111},
-    {-1.    , -1.    , -1.    ,  0.1111}};*/
-
+// Convolution kernels
+const float s_KernelTemplates[9][4] = {
+    {1.0f,  1.0f,   -1.0f,  0.1111f},
+    {0.0f,  2.0f,   -1.0f,  0.1111f},
+    {-1.0f, 1.0f,   -1.0f,  0.1111f},
+    {2.0f,  0.0f,   -1.0f,  0.1111f},
+    {0.0f,  0.0f,    8.0f,  0.1111f},
+    {-2.0f, 0.0f,   -1.0f,  0.1111f},
+    {1.0f,  -1.0f,  -1.0f,  0.1111f},
+    {0.0f,  -2.0f,  -1.0f,  0.1111f},
+    {-1.0f, -1.0f,  -1.0f,  0.1111f}};
+/*
 const float s_Kernel[9][3] = {
     { 1.    ,  1.    , -1},
     { 0.    ,  2.    , -1},
@@ -66,9 +66,7 @@ const float s_Kernel[9][3] = {
     {-2.    ,  0.    , -1},
     { 1.    , -1.    , -1},
     { 0.    , -2.    , -1},
-    {-1.    , -1.    , -1}};
-
-    
+    {-1.    , -1.    , -1}};*/
 const char *const s_ModeNames[] = {
     "Procedural",
     "Toeplitz"};
@@ -269,22 +267,37 @@ std::vector<unsigned int> generateSpikes(int numChannels, int width, int height)
     return spikes;
 }
 //-----------------------------------------------------------------------------
-/*template<int convKW, int convKH>
+template<int convKW, int convKH>
 std::vector<float> generateKernels(int numInChannels, int numOutChannels)
 {
+    // Check kernel sizes are correct
     constexpr int kernelSize = convKW * convKH;
-    constexpr int numTemplates = sizeof(s_KernelTemplates) / sizeof(s_KernelTemplates[0]);
-    assert((sizeof(s_KernelTemplates[0]) / sizeof(float)) == kernelSize);
-    
+    constexpr int templateKernelSize = sizeof(s_KernelTemplates) / sizeof(s_KernelTemplates[0]);
+    assert(kernelSize == templateKernelSize);
+
+    // Determine how many times kernels should be repeated
+    constexpr int numTemplates = sizeof(s_KernelTemplates[0]) / sizeof(s_KernelTemplates[0][0]);
+    const int numChannels = numInChannels * numOutChannels;
+    const int numRepeats = ceilDivide(numChannels, numTemplates);
+
     std::vector<float> kernels;
-    kernels.reserve(numInChannels * numOutChannels * kernelSize);
+    kernels.reserve(kernelSize * numChannels);
     
-    for(int c = 0; c < (numInChannels * numOutChannels); c++) {
-        const auto &kernelTemplate = s_KernelTemplates[c % numTemplates];
-        kernels.insert(kernels.end(), &kernelTemplate[0], &kernelTemplate[kernelSize]);
+    // Loop through kernel size (rows of s_KernelTemplates)
+    for(int i = 0; i < kernelSize; i++) {
+        // Loop through number of repeats we need to make
+        for(int j = 0; j < numRepeats; j++) {
+            // Calculate number of channels to copy
+            const unsigned int numChannelsToCopy = (j == (numRepeats - 1))
+                ? ((numChannels - 1) % numTemplates) + 1 : numTemplates;
+            
+            // Copy from template into vector
+            std::copy_n(s_KernelTemplates[i], numChannelsToCopy, std::back_inserter(kernels));
+        }
     }
+
     return kernels;
-}*/
+}
 //-----------------------------------------------------------------------------
 int main(int argc, char *argv[])
 {
@@ -293,21 +306,18 @@ int main(int argc, char *argv[])
         constexpr int blockSize = 128;
         constexpr int convKH = 3;
         constexpr int convKW = 3;
-        constexpr int convIH = 128;
-        constexpr int convIW = 128;
+        constexpr int convIH = 64;
+        constexpr int convIW = 64;
         constexpr int convIC = 3;
-        constexpr int convOH = 126;
-        constexpr int convOW = 126;
-        constexpr int convOC = 1;
+        constexpr int convOH = 62;
+        constexpr int convOW = 62;
+        constexpr int convOC = 100;
         constexpr unsigned int numSpikesPerTimestep = 100;
 
         // Calculate sizes of kernels and neuron populations
         constexpr int numPre = convIH * convIW * convIC;
         constexpr int numPost = convOH * convOW * convOC;
-        constexpr int kernelSize = convKW * convKH * convIC * convOC;
 
-        // Check filter is correct size
-        assert((sizeof(s_Kernel) / sizeof(float)) == kernelSize);
         // Read mode from command line
         Mode mode;
         if(argc < 2) {
@@ -326,9 +336,10 @@ int main(int argc, char *argv[])
             mode = (Mode)std::stoul(argv[1]);
         }
 
+
         // Generate spikes and kernels
         const auto spikes = generateSpikes(convIC, convIW, convIH);        
-        //const auto kernels = generateKernels<convKW, convKH>(convIC, convOC);
+        const auto kernels = generateKernels<convKW, convKH>(convIC, convOC);
         
         // Calculate required timesteps
         const unsigned int numTimesteps =  ceilDivide((unsigned int)spikes.size(), numSpikesPerTimestep);
@@ -360,10 +371,10 @@ int main(int argc, char *argv[])
 
         // Create device array for kernels and copy in global data
         float *d_kernel = nullptr;
-        //CHECK_CUDA_ERRORS(cudaMalloc(&d_kernel, kernels.size() * sizeof(float)));
-        //CHECK_CUDA_ERRORS(cudaMemcpy(d_kernel, kernels.data(), kernels.size() * sizeof(float), cudaMemcpyHostToDevice));
-        CHECK_CUDA_ERRORS(cudaMalloc(&d_kernel, kernelSize * sizeof(float)));
-        CHECK_CUDA_ERRORS(cudaMemcpy(d_kernel, s_Kernel, kernelSize * sizeof(float), cudaMemcpyHostToDevice));
+        CHECK_CUDA_ERRORS(cudaMalloc(&d_kernel, kernels.size() * sizeof(float)));
+        CHECK_CUDA_ERRORS(cudaMemcpy(d_kernel, kernels.data(), kernels.size() * sizeof(float), cudaMemcpyHostToDevice));
+        //CHECK_CUDA_ERRORS(cudaMalloc(&d_kernel, kernelSize * sizeof(float)));
+        //CHECK_CUDA_ERRORS(cudaMemcpy(d_kernel, s_Kernel, kernelSize * sizeof(float), cudaMemcpyHostToDevice));
 
         // Create device array for spikes and copy in global data
         unsigned int *d_spikes = nullptr;
