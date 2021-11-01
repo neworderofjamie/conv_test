@@ -23,11 +23,12 @@ out_currents_toeplitz = out_currents_toeplitz.reshape((size, size, num_channels)
 
 fig, axes = plt.subplots(num_channels, 2, sharex="col", sharey="row")
 for c in range(num_channels):
-    axes[c, 0].set_title("Procedural")
-    axes[c, 0].imshow(out_currents_procedural[:,:,c])
+    axes_row = axes[c, :] if num_channels > 1 else axes
+    axes_row[0].set_title("Procedural")
+    axes_row[0].imshow(out_currents_procedural[:,:,c])
 
-    axes[c, 1].set_title("Toeplitz")
-    axes[c, 1].imshow(out_currents_toeplitz[:,:,c])
+    axes_row[1].set_title("Toeplitz")
+    axes_row[1].imshow(out_currents_toeplitz[:,:,c])
 
 fig.tight_layout(pad=0)
 plt.show()
