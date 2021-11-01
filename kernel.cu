@@ -46,27 +46,17 @@ enum Mode
 };
 
 // Convolution kernels
-const float s_KernelTemplates[9][4] = {
-    {1.0f,  1.0f,   -1.0f,  0.1111f},
-    {0.0f,  2.0f,   -1.0f,  0.1111f},
-    {-1.0f, 1.0f,   -1.0f,  0.1111f},
-    {2.0f,  0.0f,   -1.0f,  0.1111f},
-    {0.0f,  0.0f,    8.0f,  0.1111f},
-    {-2.0f, 0.0f,   -1.0f,  0.1111f},
-    {1.0f,  -1.0f,  -1.0f,  0.1111f},
-    {0.0f,  -2.0f,  -1.0f,  0.1111f},
-    {-1.0f, -1.0f,  -1.0f,  0.1111f}};
-/*
-const float s_Kernel[9][3] = {
-    { 1.    ,  1.    , -1},
-    { 0.    ,  2.    , -1},
-    {-1.    ,  1.    , -1},
-    { 2.    ,  0.    , -1},
-    { 0.    ,  0.    ,  8},
-    {-2.    ,  0.    , -1},
-    { 1.    , -1.    , -1},
-    { 0.    , -2.    , -1},
-    {-1.    , -1.    , -1}};*/
+const float s_KernelTemplates[9][6] = {
+    {1.0f,  0.1111f,  1.0f,  0.1111f,   -1.0f,  0.1111f},
+    {0.0f,  0.1111f,  2.0f,  0.1111f,   -1.0f,  0.1111f},
+    {-1.0f,  0.1111f, 1.0f,  0.1111f,   -1.0f,  0.1111f},
+    {2.0f,  0.1111f,  0.0f,  0.1111f,   -1.0f,  0.1111f},
+    {0.0f,  0.1111f,  0.0f,  0.1111f,    8.0f,  0.1111f},
+    {-2.0f,  0.1111f, 0.0f,  0.1111f,   -1.0f,  0.1111f},
+    {1.0f,  0.1111f,  -1.0f,  0.1111f,  -1.0f,  0.1111f},
+    {0.0f,  0.1111f,  -2.0f,  0.1111f,  -1.0f,  0.1111f},
+    {-1.0f,  0.1111f, -1.0f,  0.1111f,  -1.0f,  0.1111f}};
+
 const char *const s_ModeNames[] = {
     "Procedural",
     "Toeplitz"};
@@ -74,7 +64,7 @@ const char *const s_ModeNames[] = {
 //-----------------------------------------------------------------------------
 // Kernels
 //-----------------------------------------------------------------------------
-template<int ConvKH, int ConvKW,
+template<int ConvKH, int ConvKW, int ConvPad,
          int ConvIW, int ConvIC,
          int ConvOH, int ConvOW, int ConvOC>
 __global__ void procedural(unsigned int numInSpikes, const unsigned int *d_inSpikes,
@@ -87,14 +77,14 @@ __global__ void procedural(unsigned int numInSpikes, const unsigned int *d_inSpi
         const int inRow = (preInd / ConvIC) / ConvIW;
         const int inCol = (preInd / ConvIC) % ConvIW;
         const int inChan = preInd % ConvIC;
-        const int minOutRow = min(ConvOH, max(0, 1 + (inRow - ConvKH)));
-        const int maxOutRow = min(ConvOH, max(0, 1 + inRow));
-        const int minOutCol = min(ConvOW, max(0, 1 + (inCol - ConvKW)));
-        const int maxOutCol = min(ConvOW, max(0, 1 + inCol));
+        const int minOutRow = min(ConvOH, max(0, 1 + (inRow + ConvPad - ConvKH)));
+        const int maxOutRow = min(ConvOH, max(0, 1 + inRow + ConvPad));
+        const int minOutCol = min(ConvOW, max(0, 1 + (inCol + ConvPad - ConvKW)));
+        const int maxOutCol = min(ConvOW, max(0, 1 + inCol + ConvPad));
         for(int outRow = minOutRow; outRow < maxOutRow; outRow++) {
-            const int kernRow = inRow - outRow;
+            const int kernRow = inRow - (outRow - ConvPad);
             for(int outCol = minOutCol; outCol < maxOutCol; outCol++) {
-                const int kernCol = inCol - outCol;
+                const int kernCol = inCol - (outCol - ConvPad);
                 for(int outChan = 0; outChan < ConvOC; outChan++) {
                     const int idPost = ((outRow * ConvOW * ConvOC) +
                                         (outCol * ConvOC) +
@@ -123,7 +113,9 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
     const int kernOutChan = id % ConvOC;
     
     // From these, calculate partial (without input channel) kernel index
-    const int kernelInd = (kernRow * ConvK * ConvIC * ConvOC) + (kernCol * ConvIC * ConvOC) + kernOutChan;
+    const int flipKernRow = ConvK - kernRow - 1;
+    const int flipKernCol = ConvK - kernCol - 1;
+    const int kernelInd = (flipKernRow * ConvK * ConvIC * ConvOC) + (flipKernCol * ConvIC * ConvOC) + kernOutChan;
 
     // **END COLUMN STATE VARIABLES**
 
@@ -146,8 +138,8 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
         __syncthreads();
 
         // If there is a kernel entry for this thread to process
-        // **NOTE** maxRowLength = ConvO * ConvO * ConvOC
-        if(id < (ConvO * ConvO * ConvOC)) {
+        // **NOTE** maxRowLength = ConvK * ConvK * ConvOC
+        if(id < (ConvK * ConvK * ConvOC)) {
             // Loop through spikes in block
             for(unsigned int s = 0; s < numSpikesInBlock; s++) {
                 // **BEGIN ROW STATE VARIABLES**
@@ -163,10 +155,10 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
                 // If we haven't gone off edge of output
                 const int postRow = preRow + kernRow;
                 const int postCol = preCol + kernCol;
-                if(postRow < ConvO && kernCol < (ConvO - preCol)) {                    
+                if(postRow < ConvO && kernCol < (ConvO - preCol)) {
                     // Read kernel value
                     // **NOTE** if we were only processing a single input channel this could be lifted right out
-                    const float kernelVal = -d_kernel[kernelInd + (preChan * ConvOC)];
+                    const float kernelVal = d_kernel[kernelInd + (preChan * ConvOC)];
         
                     // Calculate postsynaptic index
                     const int postInd = ((postRow * ConvO * ConvOC) +
@@ -304,19 +296,17 @@ int main(int argc, char *argv[])
     try
     {
         constexpr int blockSize = 128;
-        constexpr int convKH = 3;
-        constexpr int convKW = 3;
-        constexpr int convIH = 64;
-        constexpr int convIW = 64;
+        constexpr int convK = 3;
+        constexpr int convI = 64;
         constexpr int convIC = 3;
-        constexpr int convOH = 62;
-        constexpr int convOW = 62;
-        constexpr int convOC = 100;
+        constexpr int convO = 62;
+        constexpr int convOC = 2;
+        constexpr int convPad = 0;// (convK - 1) / 2;    // 'same' padding
         constexpr unsigned int numSpikesPerTimestep = 100;
 
         // Calculate sizes of kernels and neuron populations
-        constexpr int numPre = convIH * convIW * convIC;
-        constexpr int numPost = convOH * convOW * convOC;
+        constexpr int numPre = convI * convI * convIC;
+        constexpr int numPost = convO * convO * convOC;
 
         // Read mode from command line
         Mode mode;
@@ -338,11 +328,11 @@ int main(int argc, char *argv[])
 
 
         // Generate spikes and kernels
-        const auto spikes = generateSpikes(convIC, convIW, convIH);        
-        const auto kernels = generateKernels<convKW, convKH>(convIC, convOC);
+        const auto spikes = generateSpikes(convIC, convI, convI);        
+        const auto kernels = generateKernels<convK, convK>(convIC, convOC);
         
         // Calculate required timesteps
-        const unsigned int numTimesteps =  ceilDivide((unsigned int)spikes.size(), numSpikesPerTimestep);
+        const unsigned int numTimesteps = ceilDivide((unsigned int)spikes.size(), numSpikesPerTimestep);
 
         // Calculate remaining spikes to process in last timestep
         const unsigned int lastTimestepSpikes = spikes.size() - ((numTimesteps - 1) * numSpikesPerTimestep);
@@ -373,8 +363,6 @@ int main(int argc, char *argv[])
         float *d_kernel = nullptr;
         CHECK_CUDA_ERRORS(cudaMalloc(&d_kernel, kernels.size() * sizeof(float)));
         CHECK_CUDA_ERRORS(cudaMemcpy(d_kernel, kernels.data(), kernels.size() * sizeof(float), cudaMemcpyHostToDevice));
-        //CHECK_CUDA_ERRORS(cudaMalloc(&d_kernel, kernelSize * sizeof(float)));
-        //CHECK_CUDA_ERRORS(cudaMemcpy(d_kernel, s_Kernel, kernelSize * sizeof(float), cudaMemcpyHostToDevice));
 
         // Create device array for spikes and copy in global data
         unsigned int *d_spikes = nullptr;
@@ -395,7 +383,7 @@ int main(int argc, char *argv[])
                     dim3 threads(blockSize, 1);
                     dim3 grid(numPreSynapseBlocks, 1);
 
-                    procedural<convKH, convKW, convIW, convIC, convOH, convOW, convOC><<<grid, threads>>> (
+                    procedural<convK, convK, convPad, convI, convIC, convO, convO, convOC><<<grid, threads>>> (
                         numTimestepSpikes, &d_spikes[t * numSpikesPerTimestep],
                         d_kernel, outCurrents.second);
                 }
@@ -404,12 +392,12 @@ int main(int argc, char *argv[])
                     assert(convIW == convIH);
                     assert(convOW == convOH);
 
-                    constexpr unsigned int numPostSynapseBlocks = ceilDivide(convKW * convKH, blockSize);
+                    constexpr unsigned int numPostSynapseBlocks = ceilDivide(convK * convK * convOC, blockSize);
                     constexpr unsigned int sharedBytes = blockSize * sizeof(unsigned int);
                     
                     dim3 threads(blockSize, 1);
                     dim3 grid(numPostSynapseBlocks, 1);
-                    toeplitz<convKH, convIH, convIC, convOH, convOC><<<grid, threads, sharedBytes>>>(
+                    toeplitz<convK, convI, convIC, convO, convOC><<<grid, threads, sharedBytes>>>(
                         numTimestepSpikes, &d_spikes[t * numSpikesPerTimestep],
                         d_kernel, outCurrents.second);
                 }
