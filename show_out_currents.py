@@ -18,6 +18,8 @@ out_currents_toeplitz = np.reshape(out_currents_toeplitz, (-1, num_channels))
 
 size = np.ceil(np.sqrt(out_currents_procedural.shape[0])).astype(int)
 
+print("output %u x %u" % (size, size))
+
 out_currents_procedural = out_currents_procedural.reshape((size, size, num_channels))
 out_currents_toeplitz = out_currents_toeplitz.reshape((size, size, num_channels))
 
@@ -29,6 +31,9 @@ for c in range(num_channels):
 
     axes_row[1].set_title("Toeplitz")
     axes_row[1].imshow(out_currents_toeplitz[:,:,c], vmin=-10.0, vmax=10.0)
+
+if not np.allclose(out_currents_procedural, out_currents_toeplitz):
+    print("RESULTS DO NOT MATCH")
 
 fig.tight_layout(pad=0)
 plt.show()

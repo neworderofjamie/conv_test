@@ -46,16 +46,16 @@ enum Mode
 };
 
 // Convolution kernels
-const float s_KernelTemplates[9][6] = {
-    {1.0f,  0.1111f,  1.0f,  0.1111f,   -1.0f,  0.1111f},
-    {0.0f,  0.1111f,  2.0f,  0.1111f,   -1.0f,  0.1111f},
-    {-1.0f,  0.1111f, 1.0f,  0.1111f,   -1.0f,  0.1111f},
-    {2.0f,  0.1111f,  0.0f,  0.1111f,   -1.0f,  0.1111f},
-    {0.0f,  0.1111f,  0.0f,  0.1111f,    8.0f,  0.1111f},
-    {-2.0f,  0.1111f, 0.0f,  0.1111f,   -1.0f,  0.1111f},
-    {1.0f,  0.1111f,  -1.0f,  0.1111f,  -1.0f,  0.1111f},
-    {0.0f,  0.1111f,  -2.0f,  0.1111f,  -1.0f,  0.1111f},
-    {-1.0f,  0.1111f, -1.0f,  0.1111f,  -1.0f,  0.1111f}};
+const float s_KernelTemplates[9][4] = {
+    {1.0f,  1.0f,  -1.0f,  0.1111f},
+    {0.0f,  2.0f,  -1.0f,  0.1111f},
+    {-1.0f, 1.0f,  -1.0f,  0.1111f},
+    {2.0f,  0.0f,  -1.0f,  0.1111f},
+    {0.0f,  0.0f,  8.0f,  0.1111f},
+    {-2.0f, 0.0f,  -1.0f,  0.1111f},
+    {1.0f,  -1.0f,  -1.0f,  0.1111f},
+    {0.0f,  -2.0f,  -1.0f,  0.1111f},
+    {-1.0f, -1.0f,  -1.0f,  0.1111f}};
 
 const char *const s_ModeNames[] = {
     "Procedural",
@@ -97,7 +97,7 @@ __global__ void procedural(unsigned int numInSpikes, const unsigned int *d_inSpi
     }
 }
 
-template<int ConvK, int ConvI, int ConvIC, int ConvO, int ConvOC>
+template<int ConvK, int ConvI, int ConvIC, int ConvO, int ConvOC, int ConvB>
 __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpikes,
                          const float *d_kernel, float *d_outCurrents)
 {
@@ -153,9 +153,9 @@ __global__ void toeplitz(unsigned int numInSpikes, const unsigned int *d_inSpike
                 
                 // **BEGIN DIAGONAL GENERATE CODE**
                 // If we haven't gone off edge of output
-                const int postRow = preRow + kernRow;
-                const int postCol = preCol + kernCol;
-                if(postRow < ConvO && kernCol < (ConvO - preCol)) {
+                const int postRow = preRow + kernRow - ConvB;
+                const int postCol = preCol + kernCol - ConvB;
+                if(postRow >= 0 && postCol >= 0 && postRow < ConvO && postCol < ConvO) {
                     // Read kernel value
                     // **NOTE** if we were only processing a single input channel this could be lifted right out
                     const float kernelVal = d_kernel[kernelInd + (preChan * ConvOC)];
@@ -299,9 +299,17 @@ int main(int argc, char *argv[])
         constexpr int convK = 3;
         constexpr int convI = 64;
         constexpr int convIC = 3;
-        constexpr int convO = 62;
-        constexpr int convOC = 2;
-        constexpr int convPad = 0;// (convK - 1) / 2;    // 'same' padding
+        constexpr int convOC = 3;
+
+        // same padding
+        //constexpr int convPad = (convK - 1) / 2;
+        //constexpr int convO = convI;
+
+        // valid padding
+        constexpr int convPad = 0;
+        constexpr int convO = convI - convK + 1;
+
+        constexpr int convBor = ((convI + convK - 1) - convO) / 2;
         constexpr unsigned int numSpikesPerTimestep = 100;
 
         // Calculate sizes of kernels and neuron populations
@@ -332,7 +340,7 @@ int main(int argc, char *argv[])
         const auto kernels = generateKernels<convK, convK>(convIC, convOC);
         
         // Calculate required timesteps
-        const unsigned int numTimesteps = ceilDivide((unsigned int)spikes.size(), numSpikesPerTimestep);
+        const unsigned int numTimesteps = 1;// ceilDivide((unsigned int)spikes.size(), numSpikesPerTimestep);
 
         // Calculate remaining spikes to process in last timestep
         const unsigned int lastTimestepSpikes = spikes.size() - ((numTimesteps - 1) * numSpikesPerTimestep);
@@ -397,7 +405,7 @@ int main(int argc, char *argv[])
                     
                     dim3 threads(blockSize, 1);
                     dim3 grid(numPostSynapseBlocks, 1);
-                    toeplitz<convK, convI, convIC, convO, convOC><<<grid, threads, sharedBytes>>>(
+                    toeplitz<convK, convI, convIC, convO, convOC, convBor><<<grid, threads, sharedBytes>>>(
                         numTimestepSpikes, &d_spikes[t * numSpikesPerTimestep],
                         d_kernel, outCurrents.second);
                 }
